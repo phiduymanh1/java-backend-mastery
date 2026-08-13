@@ -1,0 +1,38 @@
+version: "3.9" # Phiên bản Docker Compose
+
+services:
+  postgres: # Container PostgreSQL
+    image: postgres:17
+    container_name: postgres
+    environment: # Cấu hình database
+      POSTGRES_DB: nextstep
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: # Mở cổng PostgreSQL
+      - "5432:5432"
+    volumes: # Lưu dữ liệu bền vững
+      - postgres-data:/var/lib/postgresql/data
+
+  redis: # Container Redis
+    image: redis:7-alpine
+    container_name: redis
+    ports: # Mở cổng Redis
+      - "6379:6379"
+
+  app: # Container Spring Boot
+    build: . # Build image từ Dockerfile hiện tại
+    container_name: nextstep-backend
+    depends_on: # Khởi động sau PostgreSQL và Redis
+      - postgres
+      - redis
+    ports: # Expose API
+      - "8080:8080"
+    environment: # Biến môi trường cho Spring Boot
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/nextstep
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+
+volumes:
+  postgres-data: # Volume lưu dữ liệu PostgreSQL
