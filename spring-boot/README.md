@@ -10,14 +10,16 @@ spring-boot/
 └── spring-security/
     ├── README.md
     ├── DocumentSpringSecurity.md
-    └── DocumentJWT.md
+    ├── DocumentJWT.md
+    ├── DocumentResourceServer.md
+    └── DocumentOIDC.md
 ```
 
 ## Các nhóm tài liệu
 
 | Nhóm | Nội dung |
 | --- | --- |
-| [Spring Security](spring-security/README.md) | Xác thực, phân quyền, JWT và vòng đời access token/refresh token. |
+| [Spring Security](spring-security/README.md) | Xác thực, phân quyền, JWT, Resource Server, OIDC và vòng đời token. |
 
 Mỗi nhóm có README riêng để giới thiệu nội dung và hướng dẫn thứ tự đọc trong nhóm. Khi thêm nhóm mới, tạo thư mục cùng README của nhóm và bổ sung liên kết vào bảng trên.
 
