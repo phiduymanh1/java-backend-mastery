@@ -43,6 +43,23 @@ Token không hợp lệ dẫn đến 401; token hợp lệ nhưng thiếu quyề
 
 Resource Server phải tin cậy issuer và khóa đã cấu hình, kiểm tra chữ ký, thời hạn, audience và claims bắt buộc theo hợp đồng token của hệ thống. JWT xác minh cục bộ không tự biết tài khoản vừa bị khóa hay token vừa bị thu hồi; xem thêm [vòng đời token](DocumentJWT.md).
 
+**Flow xác thực JWT và phân quyền tại API:**
+
+```mermaid
+flowchart TD
+    A[BearerTokenAuthenticationFilter đọc access token] --> B[AuthenticationManager / ProviderManager]
+    B --> C[JwtAuthenticationProvider]
+    C --> D[JwtDecoder kiểm tra chữ ký và validators đã cấu hình]
+    D -->|Không hợp lệ| E[401 invalid_token]
+    D -->|Hợp lệ| F[JwtAuthenticationConverter ánh xạ authorities]
+    F --> G[JwtAuthenticationToken trong SecurityContext]
+    G --> H{Đủ quyền HTTP và method tương ứng?}
+    H -->|Không| I[403 Forbidden]
+    H -->|Có| J[Controller / Service xử lý nghiệp vụ]
+```
+
+Audience và claim bắt buộc cần cấu hình theo hợp đồng token; sơ đồ không có nghĩa mọi validator đều tự bật mặc định. Luồng bắt đầu khi request đã có Bearer token; thiếu token được xử lý theo quy tắc truy cập endpoint.
+
 ### 3.1 Dependency và cấu hình
 
 Thêm vào `pom.xml` của ứng dụng API tương lai:
@@ -139,6 +156,31 @@ Spring mặc định chuyển scope thành authority có tiền tố `SCOPE_`. C
 
 Thay cơ chế `jwt(...)` bằng `opaqueToken(...)` và cấu hình introspection endpoint cùng thông tin client được phép truy vấn. API hỏi bên cấp về trạng thái token, thay vì xác minh chữ ký JWT cục bộ. Không bật hai cơ chế như thể mọi token đều được thử lần lượt; cần chọn hoặc điều phối theo thiết kế cụ thể.
 
+**Flow opaque token với introspection:**
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as Resource Server
+    participant A as Authorization Server
+    C->>R: Authorization: Bearer opaque-access-token
+    R->>R: Filter, manager và OpaqueTokenAuthenticationProvider
+    R->>A: Introspection qua OpaqueTokenIntrospector, kèm xác thực client
+    A-->>R: Trạng thái active và claims được phép trả
+    alt Token không active
+        R-->>C: 401 invalid_token
+    else Token active
+        R->>R: Tạo Authentication, ánh xạ scope và kiểm tra quyền
+        alt Đủ quyền
+            R-->>C: Kết quả nghiệp vụ
+        else Thiếu quyền
+            R-->>C: 403 Forbidden
+        end
+    end
+```
+
+Sơ đồ minh họa introspection từ xa thông thường; cache hoặc introspector tùy biến có thể thay đổi cách gọi. Nếu introspection lỗi, không coi token là hợp lệ; phản hồi lỗi phụ thuộc triển khai. Xem [Spring Security: Opaque Token](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/opaque-token.html).
+
 ## 4. Các tình huống cần kiểm tra khi triển khai
 
 | Tình huống | Kết quả mong đợi |
@@ -150,7 +192,6 @@ Thay cơ chế `jwt(...)` bằng `opaqueToken(...)` và cấu hình introspectio
 | Gửi ID token vào API | Bị từ chối theo audience và hợp đồng access token. |
 
 Đây là tiêu chí kiểm chứng khi triển khai, chưa phải kết quả test của repo tài liệu.
-
 
 
 ## 5. Nguồn đối chiếu

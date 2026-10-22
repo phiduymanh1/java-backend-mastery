@@ -113,6 +113,27 @@ Luồng Authorization Code thường gồm:
 
 ## 5. Luồng xử lý request
 
+### Flow tổng thể
+
+```mermaid
+flowchart TD
+    A[Client gửi request] --> B[Servlet container]
+    B --> C[DelegatingFilterProxy]
+    C --> D[FilterChainProxy chọn chain đầu tiên khớp]
+    D --> E[Tải context và chạy các filter trong chain]
+    E --> F{Filter kết thúc request?}
+    F -->|Có| G[Response hoặc redirect]
+    F -->|Không| H[Kiểm tra quyền HTTP]
+    H -->|Cho phép| I[Controller / Service và Method Security nếu có]
+    H -->|Từ chối| J[Handler bảo mật phản hồi]
+    I --> K[Response]
+    J --> K
+    G --> L[Dọn SecurityContext gắn với thread]
+    K --> L
+```
+
+Đây là luồng khái quát, không phải thứ tự cố định của từng filter. Các filter có thể dừng request khi xác thực thất bại, CSRF không hợp lệ hoặc cần redirect.
+
 ### Bước 1 — Client gửi request
 
 Client có thể là trình duyệt, ứng dụng di động, Postman hoặc một API client khác. Trong OAuth2 Login, nhà cung cấp thường chuyển hướng trình duyệt về ứng dụng qua callback.
@@ -231,6 +252,39 @@ UsernamePasswordAuthenticationFilter
     → Authentication đã xác thực
 ```
 
+**Flow form login bằng username/password:**
+
+```mermaid
+sequenceDiagram
+    actor B as Browser
+    participant F as UsernamePasswordAuthenticationFilter
+    participant M as AuthenticationManager / ProviderManager
+    participant P as DaoAuthenticationProvider
+    participant U as UserDetailsService
+    participant E as PasswordEncoder
+    B->>F: POST /login với username, password, CSRF hợp lệ
+    F->>M: authenticate(token chưa xác thực)
+    M->>P: authenticate(token)
+    P->>U: loadUserByUsername(username)
+    U-->>P: UserDetails hoặc lỗi
+    opt Có user và trạng thái cho phép
+        P->>E: matches(password, passwordHash)
+        E-->>P: Kết quả so khớp
+    end
+    alt Xác thực thành công
+        P-->>M: Authentication đã xác thực
+        M-->>F: Kết quả xác thực
+        F->>F: Thiết lập context và lưu theo cấu hình
+        F-->>B: Success handler, thường redirect và cookie phiên
+    else Xác thực thất bại
+        P-->>M: AuthenticationException
+        M-->>F: Lỗi xác thực
+        F-->>B: Failure handler, thường redirect về trang login
+    end
+```
+
+Sơ đồ này minh họa phần username/password ở trên. CSRF được kiểm tra trước filter đăng nhập khi bật bảo vệ CSRF. Form login tích hợp sẵn không phải endpoint JSON cấp JWT.
+
 #### Kiểm tra JWT
 
 - **Filter tích hợp sẵn:** `BearerTokenAuthenticationFilter`.
@@ -277,6 +331,26 @@ Authentication authentication =
 
 Khi sử dụng, cần xét trường hợp không có authentication hoặc là người dùng anonymous. Không suy ra người dùng đã đăng nhập chỉ từ việc giá trị này khác `null`.
 
+**Flow request tiếp theo: session và JWT stateless:**
+
+```mermaid
+flowchart TD
+    A[Request tới ứng dụng] --> B{Cách xác thực được cấu hình}
+    B -->|Session| C[Browser gửi cookie phiên]
+    C --> D[Repository tải context nếu phiên có authentication]
+    B -->|JWT stateless| E[Client gửi Bearer access token]
+    E --> F[Xác thực token cho request hiện tại]
+    F -->|Hợp lệ| G[Tạo Authentication trong context]
+    F -->|Không hợp lệ| H[401 với cấu hình API Bearer]
+    D --> I[Kiểm tra quyền bằng context hiện tại]
+    G --> I
+    I --> J[Cho phép hoặc từ chối truy cập]
+    J --> K[Dọn context của thread khi request kết thúc]
+    H --> K
+```
+
+Không có context phiên hợp lệ thì trang được bảo vệ thường yêu cầu đăng nhập. Dọn context của thread không đồng nghĩa xóa phiên đã lưu.
+
 ### Bước 6 — Authorization
 
 Spring Security kiểm tra authorities của người dùng với quy tắc phân quyền. Có hai cấp thường dùng:
@@ -306,6 +380,28 @@ Phản hồi thường gặp:
 - **Redirect đến trang đăng nhập:** thường gặp với ứng dụng dùng form login khi người dùng chưa đăng nhập.
 
 Phản hồi cụ thể phụ thuộc cơ chế xác thực, `AuthenticationEntryPoint`, `AccessDeniedHandler` và các handler đã cấu hình. Không phải mọi lỗi xác thực đều trả 403.
+
+**Flow phân quyền cho API Bearer stateless:**
+
+```mermaid
+flowchart TD
+    A[Request vào chain API] --> B{Có Bearer token?}
+    B -->|Có| C{Token hợp lệ?}
+    C -->|Không| D[401: xác thực thất bại]
+    C -->|Có| E[Authentication và authorities]
+    B -->|Không| F[Anonymous]
+    E --> G{Quy tắc HTTP cho phép?}
+    F --> G
+    G -->|Không, chưa xác thực| D
+    G -->|Không, đã xác thực| H[403: thiếu quyền]
+    G -->|Có| I[Controller gọi Service qua proxy]
+    I --> J{Kiểm tra method cho phép nếu có?}
+    J -->|Có| K[Thực hiện nghiệp vụ]
+    J -->|Không, chưa xác thực| D
+    J -->|Không, đã xác thực| H
+```
+
+Sơ đồ giả định API chỉ dùng Bearer và lỗi được truyền tới handler bảo mật. Với form login, nhánh chưa đăng nhập thường redirect. `permitAll()` có thể cho phép request thiếu token, nhưng token lỗi vẫn có thể gây 401. Lỗi CSRF có thể gây 403 trước bước phân quyền.
 
 ### Bước 7 — Controller hoặc resource xử lý nghiệp vụ
 

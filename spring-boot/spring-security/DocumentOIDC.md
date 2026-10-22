@@ -1,5 +1,7 @@
 # OpenID Connect (OIDC)
 
+Chi tiết giao thức, ví dụ HTTP và cách kiểm tra PKCE nằm trong [Authorization Code + PKCE](DocumentAuthorizationCodePKCE.md).
+
 Đọc sau [Spring Security](DocumentSpringSecurity.md), [JWT](DocumentJWT.md) và [Resource Server](DocumentResourceServer.md). Tài liệu này tập trung vào đăng nhập và cách kết hợp web với API.
 
 ## 1. Các vai trò trong hệ thống
@@ -42,6 +44,57 @@ Web app → Resource Server: Bearer access token (khi cần gọi API)
 ```
 
 Trong OIDC, client kiểm tra ID token theo giao thức, gồm chữ ký, issuer, audience, thời hạn và nonce nếu đã gửi nonce. `state` liên kết callback với yêu cầu đăng nhập; PKCE liên kết authorization code với bên khởi tạo. Client phải dùng HTTPS và đăng ký chính xác redirect URI. Với public client như SPA/mobile, dùng Authorization Code + PKCE; không nhúng client secret vào frontend.
+
+**Flow Authorization Code trong web backend dùng session:**
+
+```mermaid
+sequenceDiagram
+    actor B as Browser
+    participant W as Web app / OIDC Client
+    participant O as OpenID Provider
+    participant R as Resource Server
+    B->>W: GET /oauth2/authorization/company
+    W->>W: Lưu yêu cầu đăng nhập để đối chiếu callback
+    W-->>B: Redirect tới OP, scope openid và state
+    B->>O: Authorization request
+    O->>O: Đăng nhập và chấp thuận nếu cần
+    O-->>B: Redirect về callback với code và state
+    B->>W: GET /login/oauth2/code/company?code=...&state=...
+    W->>W: Đối chiếu state với yêu cầu đã lưu
+    W->>O: Đổi code tại token endpoint, xác thực confidential client
+    O-->>W: ID token, access token, refresh token nếu được cấp
+    W->>W: Xác thực ID token, xử lý UserInfo nếu sử dụng
+    W->>W: Tạo Authentication và lưu context theo session
+    W-->>B: Redirect sau đăng nhập và cookie phiên
+    B->>W: Request tiếp theo với cookie phiên
+    opt Backend cần gọi API và đã cấu hình OAuth2 Client
+        W->>R: Bearer access token dành cho API
+        R-->>W: Kết quả sau xác thực và phân quyền
+    end
+    W-->>B: Nội dung trang hoặc kết quả
+```
+
+Đây là nhánh thành công; callback sai state, đổi code thất bại hoặc ID token không hợp lệ phải dừng đăng nhập. Backend giữ token; browser dùng cookie phiên, không dùng ID token gọi API.
+
+**PKCE bổ sung vào flow như thế nào?**
+
+```mermaid
+sequenceDiagram
+    participant C as Client dùng PKCE
+    participant O as OpenID Provider
+    C->>C: Tạo code_verifier ngẫu nhiên và code_challenge S256
+    C->>O: Authorization request qua browser với challenge và method S256
+    O-->>C: Callback qua browser với authorization code
+    C->>O: Token request với code và code_verifier
+    O->>O: Kiểm tra verifier khớp challenge gắn với code
+    alt Khớp và yêu cầu hợp lệ
+        O-->>C: Token
+    else Không khớp
+        O-->>C: Từ chối đổi code
+    end
+```
+
+PKCE không thay thế kiểm tra state, ID token hoặc redirect URI. Public client không có secret; confidential client vẫn xác thực theo phương thức đăng ký. Sơ đồ không khẳng định cấu hình mẫu tự bật PKCE trong mọi phiên bản. Xem [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.html).
 
 ### 3.1 Dependency và client registration
 
@@ -114,6 +167,25 @@ Cấu hình web ở trên và [cấu hình API Resource Server](DocumentResource
 
 Chỉ chain đầu tiên khớp request được chạy. `requestMatchers(...)` bên trong `authorizeHttpRequests(...)` xác định quyền trong chain; `securityMatcher(...)` xác định request nào chọn chain. Không sao chép nguyên hai bean không có matcher/thứ tự vào cùng ứng dụng.
 
+**Flow chọn chain khi web và API cùng ứng dụng:**
+
+```mermaid
+flowchart TD
+    A[Request tới FilterChainProxy] --> B{Khớp /api/** ở chain Order 1?}
+    B -->|Có| C[Chọn chain API Resource Server]
+    C --> D[Xác thực Bearer token, stateless]
+    D --> E[Phân quyền và trả dữ liệu hoặc lỗi 401/403]
+    B -->|Không| F[Chọn chain web bắt các request còn lại]
+    F --> G{Endpoint công khai hoặc phiên đủ quyền?}
+    G -->|Có| H[Xử lý trang web]
+    G -->|Chưa đăng nhập tại trang được bảo vệ| I[Bắt đầu OIDC Login]
+    I --> J[Callback được chain web xử lý]
+    J --> K[Tạo phiên sau khi đăng nhập hợp lệ]
+    G -->|Đã đăng nhập nhưng thiếu quyền| L[Từ chối truy cập]
+```
+
+Đây là cách chọn chain, không phải toàn bộ thứ tự filter trong chain. Endpoint login/callback do filter tương ứng xử lý. Chain web không chạy tiếp sau chain API; API thiếu token không tự động chuyển sang OIDC Login.
+
 ## 5. Các tình huống cần kiểm tra khi triển khai
 
 | Tình huống | Kết quả mong đợi |
@@ -123,7 +195,6 @@ Chỉ chain đầu tiên khớp request được chạy. `requestMatchers(...)` 
 | Logout web rồi dùng lại access token còn hạn | Có thể vẫn truy cập API nếu chưa có chính sách thu hồi. |
 
 Đây là tiêu chí kiểm chứng khi triển khai, chưa phải kết quả test của repo tài liệu.
-
 
 
 ## 6. Nguồn đối chiếu

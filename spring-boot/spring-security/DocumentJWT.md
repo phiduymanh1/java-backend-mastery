@@ -206,6 +206,27 @@ Backend xác thực username/password, tạo access token và refresh token, lư
 
 Nếu gửi refresh token bằng cookie, response đồng thời có `Set-Cookie`; thuộc tính và thời hạn phải đồng bộ với chính sách của backend.
 
+**Flow cấp token tại endpoint tùy biến:**
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Backend cấp token
+    participant D as Kho refresh token
+    C->>A: POST /auth/login với username/password
+    A->>A: Xác thực thông tin và trạng thái tài khoản
+    alt Xác thực thành công
+        A->>A: Tạo access token và refresh token
+        A->>D: Lưu hash refresh token, phiên và thời hạn
+        D-->>A: Lưu thành công
+        A-->>C: Access token và Set-Cookie refresh token
+    else Xác thực thất bại
+        A-->>C: Lỗi đăng nhập, không cấp token
+    end
+```
+
+Đây là thiết kế endpoint của ứng dụng, không phải OAuth2 password grant. Chỉ trả token khi các bước cấp và lưu cần thiết thành công.
+
 ### 6.2 Gọi API
 
 Header từ ảnh:
@@ -249,6 +270,34 @@ Nếu xoay vòng refresh token, response cũng cập nhật cookie bằng `Set-C
 
 Trong OAuth2, endpoint token chuẩn sử dụng hợp đồng khác; `/auth/refresh` ở đây chỉ minh họa API tùy biến. Theo [RFC 9700 mục 4.14](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14), refresh token cho public client phải được ràng buộc với bên gửi hoặc sử dụng rotation để phát hiện replay.
 
+**Flow hết hạn, refresh và rotation:**
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as Resource Server
+    participant A as Backend cấp token
+    participant D as Kho refresh token
+    C->>R: Request với access token hết hạn
+    R-->>C: 401 invalid_token
+    C->>A: POST /auth/refresh với cookie refresh token
+    A->>D: Kiểm tra token, thời hạn, thu hồi và phiên
+    alt Refresh token hợp lệ
+        A->>D: Vô hiệu hóa token cũ và lưu token mới trong giao dịch
+        D-->>A: Commit thành công
+        A-->>C: Access token mới và cookie refresh token mới
+        C->>R: Thử lại request với access token mới
+        R-->>C: Kết quả sau xác thực và phân quyền
+    else Phát hiện dùng lại token cũ
+        A->>D: Thu hồi nhóm token của phiên theo chính sách
+        A-->>C: Từ chối refresh, yêu cầu đăng nhập lại
+    else Token hết hạn, bị thu hồi hoặc không hợp lệ
+        A-->>C: Từ chối refresh, yêu cầu đăng nhập lại
+    end
+```
+
+Sơ đồ chọn phương án rotation. Client nên điều phối một lần refresh khi nhiều request đồng thời hết hạn, giới hạn số lần thử lại và không refresh khi lỗi 403 do thiếu quyền.
+
 ### 6.5 Đăng xuất
 
 Backend thu hồi refresh token hoặc phiên tương ứng và xóa cookie bằng cùng path/domain đã dùng khi tạo. Client xóa access token đang giữ. Chỉ xóa cookie không vô hiệu hóa bản sao token đã bị đánh cắp.
@@ -265,6 +314,22 @@ Access token đã phát hành vẫn có thể dùng đến hết hạn nếu API
         → Không hợp lệ: đăng nhập lại
     → Logout: thu hồi refresh token/phiên và xóa token phía client
 ```
+
+**Flow logout và giới hạn thu hồi access token:**
+
+```mermaid
+flowchart TD
+    A[Client yêu cầu logout] --> B[Backend thu hồi refresh token hoặc phiên]
+    B --> C[Backend xóa cookie đúng path và domain]
+    C --> D[Client xóa access token đang giữ]
+    D --> E{Bản sao access token còn hạn được gửi tới API?}
+    E -->|Không| F[Không có request bằng bản sao token]
+    E -->|Có| G{API kiểm tra trạng thái thu hồi?}
+    G -->|Không| H[Token có thể vẫn được chấp nhận đến hết hạn]
+    G -->|Có| I[Đối chiếu chính sách thu hồi trước khi cho phép]
+```
+
+Các bước logout này cần được ứng dụng triển khai; xóa token tại client không làm mọi bản sao mất hiệu lực.
 
 ## 7 Các điểm đã chỉnh từ bản Word
 
